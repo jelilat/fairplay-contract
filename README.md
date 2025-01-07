@@ -79,3 +79,7 @@ Fairplay is a decentralized no-loss prediction market protocol where users can s
 - Additional market types
 - Enhanced AMM algorithms
 - Governance system
+
+## Deployment
+
+This contract is currently deployed on the [Lens testnet](https://block-explorer.testnet.lens.dev/address/0x7EE3E053dE3E994CFcd8bCaAd2D711aa6E365E28#read).
