@@ -37,7 +37,6 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
         uint256 yesStake; // Total amount staked on 'YES'
         uint256 noStake; // Total amount staked on 'NO'
         uint256 rewardPool; // Total reward pool
-        uint256 creatorReward; // Reward for the market creator
         bool resolved; // Whether the market is resolved
         Outcome outcome; // Outcome of the market
         bool challenged; // Whether the proposal is challenged
@@ -78,6 +77,7 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
     mapping(uint256 => MarketState) public marketStates;
     mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => mapping(Outcome => Stake[])) public stakes;
+    mapping(address => uint256) public balances; // Track user balances
     uint256 public marketCount; // Counter for market IDs
 
     // Events for logging actions
@@ -87,7 +87,8 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
         address user,
         uint256 amount,
         uint256 units,
-        Outcome outcome
+        Outcome outcome,
+        uint256 index
     );
     event OutcomeProposed(
         uint256 marketId,
@@ -97,6 +98,13 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
     event ProposalChallenged(uint256 marketId, address challenger);
     event ProposalResolved(uint256 marketId, Outcome outcome);
     event RewardsDistributed(uint256 marketId);
+    event StakeRestaked(
+        uint256 oldMarketId,
+        uint256 newMarketId,
+        address staker,
+        uint256 amount
+    );
+    event Withdrawal(address indexed user, uint256 amount);
 
     /**
      * @dev Constructor to initialize the contract with the owner.
@@ -139,8 +147,12 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
         string memory _question,
         string memory _category,
         uint256 _endTime
-    ) external {
+    ) external payable {
         require(_endTime > block.timestamp, "End time must be in the future");
+        require(msg.value > 0, "Initial seed must be greater than 0");
+
+        uint256 halfSeed = msg.value / 2;
+        require(halfSeed > 0, "Initial seed too small");
 
         marketCores[marketCount] = MarketCore({
             question: _question,
@@ -151,11 +163,10 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
         });
 
         marketStates[marketCount] = MarketState({
-            totalStake: 0,
-            yesStake: 0,
-            noStake: 0,
+            totalStake: msg.value,
+            yesStake: halfSeed,
+            noStake: halfSeed,
             rewardPool: 0,
-            creatorReward: 0,
             resolved: false,
             outcome: Outcome.UNRESOLVED,
             challenged: false,
@@ -164,6 +175,25 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
             totalYesUnits: 0,
             totalNoUnits: 0
         });
+
+        // Add initial stakes to the stakes mapping
+        stakes[marketCount][Outcome.YES].push(
+            Stake({
+                amount: halfSeed,
+                units: halfSeed, // Assuming 1:1 units for initial stake
+                staker: msg.sender,
+                claimed: false
+            })
+        );
+
+        stakes[marketCount][Outcome.NO].push(
+            Stake({
+                amount: halfSeed,
+                units: halfSeed, // Assuming 1:1 units for initial stake
+                staker: msg.sender,
+                claimed: false
+            })
+        );
 
         emit MarketCreated(marketCount, _question, _endTime);
         marketCount++;
@@ -183,7 +213,7 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
     ) public pure returns (uint256) {
         // If no stakes yet, return 2 units per token (50/50 probability)
         if (currentStake == 0 && oppositeStake == 0) {
-            return amount * 2; // 50/50 probability
+            return amount * 1; // 50/50 probability
         }
 
         // Calculate probability and units
@@ -235,6 +265,8 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
             state.totalNoUnits += units;
         }
 
+        // Add the stake to the array and get the index
+        uint256 index = stakes[marketId][outcome].length;
         stakes[marketId][outcome].push(
             Stake({
                 amount: netStake,
@@ -244,7 +276,7 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
             })
         );
 
-        emit StakePlaced(marketId, msg.sender, netStake, units, outcome);
+        emit StakePlaced(marketId, msg.sender, netStake, units, outcome, index);
     }
 
     /**
@@ -299,37 +331,11 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
         uint256 marketId
     ) internal onlyAfterChallengePeriod(marketId) nonReentrant {
         MarketState storage market = marketStates[marketId];
-        // require(market.resolved, "Market not resolved yet");
-        // require(!market.challenged, "Market resolution is under challenge");
+        market.resolved = true;
 
-        uint256 rewardableAmount = (market.rewardPool * stakerReward) / 100;
-        Stake[] storage winners = stakes[marketId][market.outcome];
-
-        // Use stored total units instead of loop
-        uint256 totalUnits = market.outcome == Outcome.YES
-            ? market.totalYesUnits
-            : market.totalNoUnits;
-
-        // Distribute rewards based on units
-        for (uint256 i = 0; i < winners.length; i++) {
-            if (!winners[i].claimed) {
-                uint256 reward = (winners[i].units * rewardableAmount) /
-                    totalUnits;
-                winners[i].claimed = true;
-
-                (bool sent, ) = payable(winners[i].staker).call{
-                    value: winners[i].amount + reward
-                }("");
-                require(sent, "Transfer to staker failed");
-            }
-        }
-
-        // Handle creator reward
         uint256 creatorRewardAmount = (market.rewardPool * creatorReward) / 100;
-        (bool success, ) = payable(marketCores[marketId].creator).call{
-            value: creatorRewardAmount
-        }("");
-        require(success, "Transfer to creator failed");
+        balances[marketCores[marketId].creator] += creatorRewardAmount;
+        balances[owner()] += creatorRewardAmount;
 
         emit RewardsDistributed(marketId);
     }
@@ -348,17 +354,10 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
 
         if (isProposalCorrect) {
             marketStates[marketId].outcome = proposal.proposedOutcome;
-            (bool success, ) = payable(proposal.proposer).call{
-                value: proposal.bond + challengeBond
-            }("");
-            require(success, "Transfer failed");
+            balances[proposal.proposer] += proposal.bond + challengeBond;
         } else {
             // Return the challenge bond to the challenger
-            (bool success, ) = payable(marketStates[marketId].challenger).call{
-                value: challengeBond
-            }("");
-            require(success, "Transfer to challenger failed");
-
+            balances[marketStates[marketId].challenger] += challengeBond;
             marketStates[marketId].rewardPool += proposal.bond;
         }
 
@@ -386,14 +385,126 @@ contract FairplayPredictionMarket is Ownable, ReentrancyGuard {
         marketStates[marketId].outcome = proposal.proposedOutcome;
         proposal.resolved = true;
 
-        (bool success, ) = payable(proposal.proposer).call{
-            value: proposal.bond
-        }("");
-        require(success, "Bond transfer failed to proposer");
+        balances[proposal.proposer] += proposal.bond;
 
         emit ProposalResolved(marketId, proposal.proposedOutcome);
 
         // Call distributeRewards immediately after finalizing
         distributeRewards(marketId);
+    }
+
+    /**
+     * @dev Allows users to claim their stake and rewards.
+     * @param marketId The ID of the market.
+     * @param outcome The outcome the user staked on.
+     * @param stakeIndex The index of the stake in the market's stake array.
+     */
+    function unstake(
+        uint256 marketId,
+        Outcome outcome,
+        uint256 stakeIndex
+    ) external nonReentrant {
+        MarketState storage market = marketStates[marketId];
+        require(market.resolved, "Market not resolved yet");
+
+        Stake storage userStake = stakes[marketId][outcome][stakeIndex];
+        require(userStake.staker == msg.sender, "Not the stake owner");
+        require(!userStake.claimed, "Stake already claimed");
+
+        uint256 reward = 0;
+        if (market.outcome == outcome) {
+            uint256 rewardableAmount = (market.rewardPool * stakerReward) / 100;
+            uint256 totalUnits = outcome == Outcome.YES
+                ? market.totalYesUnits
+                : market.totalNoUnits;
+            reward = (userStake.units * rewardableAmount) / totalUnits;
+        }
+
+        userStake.claimed = true;
+        balances[msg.sender] += userStake.amount + reward;
+    }
+
+    /**
+     * @dev Allows users to withdraw a specific amount from their balance.
+     * @param amount The amount to withdraw.
+     */
+    function withdraw(uint256 amount) external nonReentrant {
+        require(amount > 0, "Amount must be greater than 0");
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+
+        balances[msg.sender] -= amount;
+
+        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        require(success, "Withdrawal failed");
+
+        emit Withdrawal(msg.sender, amount);
+    }
+
+    /**
+     * @dev Allows users to restake their unclaimed stakes into a new market.
+     * @param oldMarketId The ID of the market from which the stake is being restaked.
+     * @param newMarketId The ID of the market to which the stake is being restaked.
+     * @param outcome The outcome being staked on in the new market.
+     * @param stakeIndex The index of the stake in the old market's stake array.
+     */
+    function restake(
+        uint256 oldMarketId,
+        uint256 newMarketId,
+        Outcome outcome,
+        uint256 stakeIndex
+    ) external onlyBeforeEnd(newMarketId) nonReentrant {
+        require(newMarketId < marketCount, "New market does not exist");
+        require(
+            outcome == Outcome.YES || outcome == Outcome.NO,
+            "Invalid outcome"
+        );
+
+        Stake storage userStake = stakes[oldMarketId][
+            marketStates[oldMarketId].outcome
+        ][stakeIndex];
+        require(userStake.staker == msg.sender, "Not the stake owner");
+        require(!userStake.claimed, "Stake already claimed or restaked");
+
+        uint256 restakeAmount = userStake.amount;
+        require(restakeAmount > 0, "No restakable stake found");
+
+        userStake.claimed = true; // Mark as claimed to prevent double restaking
+
+        MarketState storage newState = marketStates[newMarketId];
+
+        uint256 units = calculateUnits(
+            restakeAmount,
+            outcome == Outcome.YES ? newState.yesStake : newState.noStake,
+            outcome == Outcome.YES ? newState.noStake : newState.yesStake
+        );
+
+        newState.totalStake += restakeAmount;
+
+        if (outcome == Outcome.YES) {
+            newState.yesStake += restakeAmount;
+            newState.totalYesUnits += units;
+        } else {
+            newState.noStake += restakeAmount;
+            newState.totalNoUnits += units;
+        }
+
+        stakes[newMarketId][outcome].push(
+            Stake({
+                amount: restakeAmount,
+                units: units,
+                staker: msg.sender,
+                claimed: false
+            })
+        );
+
+        emit StakeRestaked(oldMarketId, newMarketId, msg.sender, restakeAmount);
+    }
+
+    function getTotalYesStakes(uint256 marketId) public view returns (uint256) {
+        return stakes[marketId][Outcome.YES].length;
+    }
+
+    function getTotalNoStakes(uint256 marketId) public view returns (uint256) {
+        return stakes[marketId][Outcome.NO].length;
     }
 }
