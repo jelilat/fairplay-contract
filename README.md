@@ -10,15 +10,11 @@ Fairplay is a decentralized no-loss prediction market protocol where users can s
   - Question (e.g., "Will ETH price be above $3000 on Dec 31?")
   - Category (e.g., "Crypto", "Sports", "Politics")
   - End Time
+  - Initial Seed (GRASS): The market creator must provide an initial seed amount, which is split equally between the `YES` and `NO` outcomes to ensure balanced initial stakes.
 
-### 2. Order Book System
-- **Limit Orders**: Users place orders specifying:
-  - Amount to stake
-  - Price (in probability terms, 0-100%)
-  - Position (YES/NO)
-- **Matching Engine**: Orders are matched based on:
-  - Price compatibility
-  - Time priority (FIFO)
+### 2. Automated Market Maker (AMM)
+- **Staking**: Users can stake on market outcomes (`YES` or `NO`). The AMM model automatically adjusts the odds based on the current stakes.
+- **Unit Calculation**: The number of units received for a stake is calculated based on the current probability of the chosen outcome, ensuring fair price discovery.
 
 ### 3. Fee Structure
 - **Platform Fee**: 1% of each stake
@@ -44,9 +40,9 @@ Fairplay is a decentralized no-loss prediction market protocol where users can s
 - Zero-risk participation model
 
 ### Fair Price Discovery
-- Order book ensures efficient price discovery
+- AMM ensures efficient price discovery
 - Prevents last-minute manipulation
-- Transparent matching mechanism
+- Transparent staking mechanism
 
 ### Decentralized Resolution
 - Bond-based outcome proposal system
@@ -58,7 +54,7 @@ Fairplay is a decentralized no-loss prediction market protocol where users can s
 ### Smart Contracts
 1. **FairplayPredictionMarket.sol**
    - Market creation and management
-   - Order book operations
+   - AMM-based staking operations
    - Stake handling
    - Resolution mechanism
    - Reward distribution
@@ -81,5 +77,5 @@ Fairplay is a decentralized no-loss prediction market protocol where users can s
 ## Future Extensions
 - Multiple resolution mechanisms
 - Additional market types
-- Enhanced order matching
+- Enhanced AMM algorithms
 - Governance system
